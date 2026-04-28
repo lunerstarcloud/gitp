@@ -5,7 +5,7 @@
  * 功能：根据是否涉及origin远程仓库自动设置或清除代理
  */
 
-import { exec, ChildProcess } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -60,16 +60,33 @@ function executeGitWithProxy(): void {
     let proxyServer = '';
     
     try {
-        // 检查命令是否涉及origin
-        const hasOrigin = gitArgs.some(arg => 
+        // 检查命令是否涉及origin或是否为clone命令
+        const isCloneCommand = gitArgs.length > 0 && gitArgs[0].toLowerCase() === 'clone';
+        const hasOrigin = gitArgs.some(arg =>
             typeof arg === 'string' && arg.toLowerCase() === 'origin'
         ) || fullGitCommand.toLowerCase().includes('origin');
-        
-        if (hasOrigin) {
+
+        if (isCloneCommand) {
+            // 为clone命令添加 --progress 参数以显示进度
+            if (!gitArgs.includes('--progress')) {
+                gitArgs.push('--progress');
+            }
+
+            needProxy = true;
+            proxyServer = readProxyConfig();
+            console.log('检测到git clone命令，临时设置代理...');
+
+            // 设置临时代理（同时设置大小写，确保兼容性）
+            process.env.HTTP_PROXY = proxyServer;
+            process.env.HTTPS_PROXY = proxyServer;
+            process.env.http_proxy = proxyServer;
+            process.env.https_proxy = proxyServer;
+            console.log(`已设置代理: HTTP_PROXY=${proxyServer}, HTTPS_PROXY=${proxyServer}`);
+        } else if (hasOrigin) {
             needProxy = true;
             proxyServer = readProxyConfig();
             console.log('检测到涉及origin的Git命令，临时设置代理...');
-            
+
             // 设置临时代理（同时设置大小写，确保兼容性）
             process.env.HTTP_PROXY = proxyServer;
             process.env.HTTPS_PROXY = proxyServer;
@@ -80,26 +97,13 @@ function executeGitWithProxy(): void {
             console.log('执行不涉及origin的Git命令，不设置代理...');
         }
         
-        console.log(`执行命令: ${fullGitCommand}`);
+        console.log(`执行命令: git ${gitArgs.join(' ')}`);
         
-        // 执行Git命令并实时输出
-        const childProcess: ChildProcess = exec(fullGitCommand, (error, stdout, stderr) => {
-            if (stderr) {
-                console.error(stderr);
-            }
-            if (error) {
-                console.error(`Git命令执行失败: ${error.message}`);
-                process.exit(error.code || 1);
-            }
+        // 使用spawn执行Git命令，stdio: 'inherit'让git认为在终端运行，显示进度
+        const childProcess: ChildProcess = spawn('git', gitArgs, {
+            stdio: 'inherit',
+            shell: true
         });
-        
-        // 实时输出stdout和stderr
-        if (childProcess.stdout) {
-            childProcess.stdout.pipe(process.stdout);
-        }
-        if (childProcess.stderr) {
-            childProcess.stderr.pipe(process.stderr);
-        }
         
         // 监听子进程退出
         childProcess.on('exit', (code) => {
